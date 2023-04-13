@@ -13,7 +13,7 @@ option(TIM_VX_ENABLE_VIPLITE            "Enable lite driver api support"        
 option(TIM_VX_ENABLE_40BIT              "Enable large memory support"           OFF)
 option(TIM_VX_ENABLE_PLATFORM           "Enable multi devices support"          OFF)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror")
 set(CONFIG "" CACHE STRING "Target Platform")
