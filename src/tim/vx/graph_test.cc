@@ -34,7 +34,7 @@
 
 namespace tvx = trace;
 
-TEST(graph, gen_graph_with_trace) {
+TEST(graph, trace_test) {
     auto ctx = tvx::Context::Create();
     auto graph = ctx->CreateGraph();
 
@@ -84,6 +84,39 @@ TEST(graph, gen_graph_with_trace) {
 
     EXPECT_TRUE(nbg_out->CopyDataFromTensor(output.data()));
     EXPECT_EQ(output, expected_out);
+}
+
+TEST(graph, replay_test) {
+    auto ctx_0 = tim::vx::Context::Create();
+    auto graph_0 = ctx_0->CreateGraph();
+    auto spec_0 = tim::vx::TensorSpec((tim::vx::DataType)9, trace::_VSI_Replayer::get_vector<unsigned int>(0, 4), (tim::vx::TensorAttribute)8);
+    auto spec_1 = tim::vx::TensorSpec((tim::vx::DataType)9, trace::_VSI_Replayer::get_vector<unsigned int>(16, 4), (tim::vx::TensorAttribute)16);
+    auto tensor_0 = graph_0->CreateTensor(spec_0, nullptr);
+    auto tensor_1 = graph_0->CreateTensor(spec_0, nullptr);
+    auto tensor_2 = graph_0->CreateTensor(spec_1, nullptr);
+    auto add_0 = graph_0->CreateOperation<tim::vx::ops::Add>();
+    add_0->BindInputs({tensor_0,tensor_1});
+    add_0->BindOutputs({tensor_2});
+    size_t nbg_size_0 = -1;
+    graph_0->CompileToBinary(nullptr, &nbg_size_0);
+    graph_0->CompileToBinary(trace::_VSI_Replayer::get_vector<char>(32, 5212).data(), &nbg_size_0);
+    tensor_0->CopyDataToTensor(trace::_VSI_Replayer::get_vector<char>(5244, 16).data(), 16);
+    tensor_1->CopyDataToTensor(trace::_VSI_Replayer::get_vector<char>(5260, 16).data(), 16);
+    graph_0->Run();
+    tensor_2->CopyDataFromTensor(trace::_VSI_Replayer::get_vector<char>(5276, 16).data());
+    auto graph_1 = ctx_0->CreateGraph();
+    auto tensor_3 = graph_1->CreateTensor(spec_0, nullptr);
+    auto tensor_4 = graph_1->CreateTensor(spec_0, nullptr);
+    auto tensor_5 = graph_1->CreateTensor(spec_1, nullptr);
+    tensor_3->CopyDataToTensor(trace::_VSI_Replayer::get_vector<char>(5292, 16).data(), 16);
+    tensor_4->CopyDataToTensor(trace::_VSI_Replayer::get_vector<char>(5308, 16).data(), 16);
+    std::vector<char> nbg_buf_vec_0 = trace::_VSI_Replayer::get_vector<char>(5324, 5212);
+    auto nbg_0 = graph_1->CreateOperation<tim::vx::ops::NBG>(nbg_buf_vec_0.data(), 2, 1);
+    nbg_0->BindInputs({tensor_3,tensor_4});
+    nbg_0->BindOutputs({tensor_5});
+    graph_1->Compile();
+    graph_1->Run();
+    tensor_5->CopyDataFromTensor(trace::_VSI_Replayer::get_vector<char>(10536, 16).data());
 }
 
 TEST(graph, gen_binary_graph_with_empty_graph) {
