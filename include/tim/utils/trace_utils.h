@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <boost/preprocessor.hpp>
 #include <boost/type_index.hpp>
+#include <type_traits>
 
 #include "tim/vx/context.h"
 #include "context_private.h"
@@ -23,13 +24,50 @@ Caution! Do not formatting these code with auto format tools!
 *************************************************************/
 /*
 ToDo:
-1. split trace implements to multi files
+1. split trace implements to multi files (DONE)
 2. annotating and readme
 3. change some members to private
 4. logging enum with literal
 */
+
 namespace trace {
 namespace target = ::tim::vx;
+template <class, class = void>
+struct is_fundamental_vector : std::false_type {};
+
+template <class T>
+struct is_fundamental_vector<std::vector<T>> {
+  static constexpr bool value = std::is_fundamental_v<T>;
+};
+
+template <class T>
+struct is_fundamental_pointer : std::integral_constant<bool,
+    std::is_pointer_v<T> &&
+    std::is_fundamental_v<std::remove_pointer_t<T>>> {};
+
+template <class, class = void>
+struct is_traced_obj : std::false_type {};
+
+template <class T>
+struct is_traced_obj<T,
+    std::void_t<decltype(std::declval<T&>()._VSI_TraceGetObjName())>>
+  : std::true_type {};
+
+template <class, class = void>
+struct is_traced_obj_ptr : std::false_type {};
+
+template <class T>
+struct is_traced_obj_ptr<T,
+    std::void_t<decltype(std::declval<T&>()->_VSI_TraceGetObjName())>>
+  : std::true_type {};
+
+template <class T>
+struct is_others : std::integral_constant<bool,
+    !is_fundamental_vector<std::decay_t<T>>::value &&
+    !std::is_enum<std::decay_t<T>>::value &&
+    !std::is_fundamental<std::decay_t<T>>::value &&
+    !is_traced_obj<std::decay_t<T>>::value &&
+    !is_traced_obj_ptr<std::decay_t<T>>::value> {};
 
 struct _VSI_Replayer {
   static FILE* file_trace_bin;
@@ -49,7 +87,7 @@ struct _VSI_Replayer {
     }
     return fp;
   }
-  template <typename T>
+  template <class T>
   static std::vector<T> get_vector(uint32_t offset, size_t vec_size) {
     std::vector<T> ret_vec;
     if (!file_trace_bin) {
@@ -118,7 +156,6 @@ struct _VSI_Tracer {
     // printf("%s", arg_buffer);
   }
 
-
   static void push_back_msg_cache(const std::string& msg) {
     msg_cache_.push_back(msg);
   }
@@ -176,55 +213,73 @@ struct _VSI_Tracer {
     return temp;
   }
 
-  template <typename T>
-  static void logging_vector(const T& vec, uint32_t idx) {
-    uint32_t offset = dump_data(vec.data(), sizeof(vec[0]), vec.size());
-    std::string element_type =
-        boost::typeindex::type_id_with_cvr<decltype(vec[0])>().pretty_name();
-    element_type = element_type.substr(0, element_type.rfind(" const&"));
-    char log_msg[1024] = {0};
-    snprintf(log_msg, 1024, "trace::_VSI_Replayer::get_vector<%s>(%u, %u)",
-             element_type.c_str(), offset, (uint32_t)vec.size());
-    insert_params_log_cache(std::string(log_msg), idx);
-  }
-
-  template <typename T>
-  static void logging_numeric(const T& numeric, uint32_t idx) {
-    insert_params_log_cache(std::to_string(numeric), idx);
-  }
-
-  template <typename T>
-  static void logging_enum(const T& enum_val, uint32_t idx) {
-    std::string enum_type =
-        boost::typeindex::type_id_with_cvr<decltype(enum_val)>().pretty_name();
-    enum_type = enum_type.substr(0, enum_type.rfind(" const&"));
-    char log_msg[1024] = {0};
-    snprintf(log_msg, 1024, "(%s)%d", enum_type.c_str(), (int)enum_val);
-    insert_params_log_cache(std::string(log_msg), idx);
-  }
-
-  template <typename T>
-  static void logging_obj(const T& obj, uint32_t idx) {
-    insert_params_log_cache(obj._VSI_TraceGetObjName(), idx);
-  }
-  template <typename T>
-  static void logging_obj_ptr(const T& obj, uint32_t idx) {
-    insert_params_log_cache(obj->_VSI_TraceGetObjName(), idx);
-  }
-
   // special process function for tensor vector
   static std::vector<std::shared_ptr<target::Tensor>> proc_obj_ptr_vec(
       const std::vector<std::shared_ptr<Tensor>>& vec);
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
-  static void logging_param(const std::any& param, bool comma) {
-    logging_msg("unimplemented_dtype_logging");
-    if (comma) {
-      logging_msg(",");
-    }
+  // default substitution
+  template <class T,
+      typename std::enable_if_t<is_others<T>::value, int> = 0>
+  static void logging_param(const T& t, uint32_t idx) {
+    std::string param_type =
+        boost::typeindex::type_id<decltype(t)>().pretty_name();
+    VSILOGI("default logging_param substitution call, dtype is %s",
+        param_type.c_str());
   }
 #pragma GCC diagnostic pop
+
+  // enable if T is fundamental std::vector
+  template <class T,
+      typename std::enable_if_t<
+          is_fundamental_vector<std::decay_t<T>>::value, int> = 0>
+  static void logging_param(const T& t, uint32_t idx) {
+    uint32_t offset = dump_data(t.data(), sizeof(t[0]), t.size());
+    std::string element_type =
+        boost::typeindex::type_id<decltype(t[0])>().pretty_name();
+    char log_msg[1024] = {0};
+    snprintf(log_msg, 1024, "trace::_VSI_Replayer::get_vector<%s>(%u, %u)",
+             element_type.c_str(), offset, (uint32_t)t.size());
+    insert_params_log_cache(std::string(log_msg), idx);
+  }
+
+  // enable if T is enum
+  template <class T,
+      typename std::enable_if_t<
+          std::is_enum<std::decay_t<T>>::value, int> = 0>
+  static void logging_param(const T& t, uint32_t idx) {
+    std::string enum_type =
+        boost::typeindex::type_id<decltype(t)>().pretty_name();
+    char log_msg[1024] = {0};
+    snprintf(log_msg, 1024, "(%s)%d", enum_type.c_str(), (int)t);
+    insert_params_log_cache(std::string(log_msg), idx);
+  }
+
+  // enable if T is fundamental
+  template <class T,
+      typename std::enable_if_t<
+          std::is_fundamental<std::decay_t<T>>::value, int> = 0>
+  static void logging_param(const T& t, uint32_t idx) {
+    insert_params_log_cache(std::to_string(t), idx);
+  }
+
+  // enable if T is derive from _VSI_TraceApiClassBase
+  template <class T,
+      typename std::enable_if_t<
+          is_traced_obj<std::decay_t<T>>::value, int> = 0>
+  static void logging_param(const T& t, uint32_t idx) {
+    insert_params_log_cache(t._VSI_TraceGetObjName(), idx);
+  }
+
+  // enable if T is shared_ptr point to object which 
+  // derive from _VSI_TraceApiClassBase
+  template <class T,
+      typename std::enable_if_t<
+          is_traced_obj_ptr<std::decay_t<T>>::value, int> = 0>
+  static void logging_param(const T& t, uint32_t idx) {
+    insert_params_log_cache(t->_VSI_TraceGetObjName(), idx);
+  }
 
 };
 std::unordered_map<const void*, std::string> _VSI_Tracer::obj_names_;
@@ -239,7 +294,7 @@ std::unordered_map<std::string, std::string> _VSI_Tracer::objs_prefix_ = {
 };
 
 
-template <typename TargetClass>
+template <class TargetClass>
 struct _VSI_TraceApiClassBase {
   std::shared_ptr<TargetClass> impl_;
   TargetClass& _VSI_TraceGetImpl() const { return *impl_; }
@@ -252,44 +307,12 @@ struct _VSI_TraceApiClassBase {
 
 }  // namespace trace
 
-#define _L_NUMERIC 0  // mark process flag = 0
-#define LOG_NUMERIC_(numeric, idx) \
-  _VSI_Tracer::logging_numeric<decltype(numeric)>(numeric, idx);
+#define LOG_PARAM_IMPL_(r, _, i, param)                                        \
+  _VSI_Tracer::logging_param<decltype(param)>(param, i);
 
-#define _L_VECTOR 1 // mark process flag = 1
-#define LOG_VECTOR_(vec, idx) \
-  _VSI_Tracer::logging_vector<decltype(vec)>(vec, idx);
-
-#define _L_ENUM 2 // mark process flag = 2
-#define LOG_ENUM_(enum_val, idx) \
-  _VSI_Tracer::logging_enum<decltype(enum_val)>(enum_val, idx);
-
-#define _L_OBJ  3 // mark process flag = 3
-#define LOG_OBJ_(obj, idx) \
-  _VSI_Tracer::logging_obj<decltype(obj)>(obj, idx);
-
-#define _L_OBJ  3 // mark process flag = 3
-#define LOG_OBJ_(obj, idx) \
-  _VSI_Tracer::logging_obj<decltype(obj)>(obj, idx);
-
-#define _L_OBJ_PTR  4 // mark process flag = 4
-#define LOG_OBJ_PTR_(obj, idx) \
-  _VSI_Tracer::logging_obj_ptr<decltype(obj)>(obj, idx);
-
-#define _L_DEFAULT 5  // mark process flag = 4
-#define LOG_DEFAULT_(param, idx) // logging the param in SPECIAL_MACRO_
-
-#define LOG_PARAM_IMPL_(r, flags, i, param) \
-  BOOST_PP_IF(BOOST_PP_EQUAL(BOOST_PP_SEQ_ELEM(i, flags), 0), LOG_NUMERIC_,    \
-  BOOST_PP_IF(BOOST_PP_EQUAL(BOOST_PP_SEQ_ELEM(i, flags), 1), LOG_VECTOR_,     \
-  BOOST_PP_IF(BOOST_PP_EQUAL(BOOST_PP_SEQ_ELEM(i, flags), 2), LOG_ENUM_,       \
-  BOOST_PP_IF(BOOST_PP_EQUAL(BOOST_PP_SEQ_ELEM(i, flags), 3), LOG_OBJ_,        \
-  BOOST_PP_IF(BOOST_PP_EQUAL(BOOST_PP_SEQ_ELEM(i, flags), 4), LOG_OBJ_PTR_,    \
-  LOG_DEFAULT_)))))(param, i)
-
-#define LOG_PARAMS(flags, params)                                              \
+#define LOG_PARAMS(params)                                                     \
   _VSI_Tracer::init_params_log_cache(BOOST_PP_SEQ_SIZE(params));               \
-  BOOST_PP_SEQ_FOR_EACH_I(LOG_PARAM_IMPL_, flags, params)
+  BOOST_PP_SEQ_FOR_EACH_I(LOG_PARAM_IMPL_, _, params)
 
 #define _P_DEFAULT 0 // mark process flag = 0
 #define PROC_DEFAULT_(param) param
@@ -379,17 +402,13 @@ struct _VSI_TraceApiClassBase {
 #define VSI_DEF_MEMFN_SP_3_(_1, _2, _3)                                        \
   _Pragma("GCC error \"no implementation for 3 args macro overload\"")
 
-#define VSI_DEF_MEMFN_SP_4_(_1, _2, _3, _4)                                    \
-  _Pragma("GCC error \"no implementation for 4 args macro overload\"")
-
-#define VSI_DEF_MEMFN_SP_5_(ret_class, api_name, args_type, log_flags,         \
-                            proc_flags)                                        \
+#define VSI_DEF_MEMFN_SP_4_(ret_class, api_name, args_type, proc_flags)        \
   std::shared_ptr<ret_class> api_name(ARGS_TYPE_TO_DECLARATION(args_type)) {   \
     std::string this_obj_name = _VSI_TraceGetObjName();                        \
     std::string obj_name = _VSI_Tracer::allocate_obj_name();                   \
     _VSI_Tracer::logging_msg("auto %s = %s->%s(", obj_name.c_str(),            \
                               this_obj_name.c_str(), __FUNCTION__);            \
-    LOG_PARAMS(log_flags, ARGS_TYPE_TO_PARAMS(args_type))                      \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
     _VSI_Tracer::dump_params_log_cache();                                      \
     _VSI_Tracer::logging_msg(");\n");                                          \
     auto obj = std::make_shared<ret_class>(                                    \
@@ -399,15 +418,15 @@ struct _VSI_TraceApiClassBase {
     return obj;                                                                \
   }
 
-#define VSI_DEF_MEMFN_SP_6_(ret_class, api_name, args_type, log_flags,         \
-                            proc_flags, SPECIAL_MACRO_)                        \
+#define VSI_DEF_MEMFN_SP_5_(ret_class, api_name, args_type, proc_flags,        \
+                            SPECIAL_MACRO_)                                    \
   std::shared_ptr<ret_class> api_name(ARGS_TYPE_TO_DECLARATION(args_type)) {   \
     std::string this_obj_name = _VSI_TraceGetObjName();                        \
     std::string obj_name =                                                     \
         _VSI_Tracer::allocate_obj_name(_VSI_Tracer::objs_prefix_[#ret_class]); \
     _VSI_Tracer::push_back_msg_cache("auto " + obj_name + " = " + this_obj_name\
         + "->" + __FUNCTION__ + "(");                                          \
-    LOG_PARAMS(log_flags, ARGS_TYPE_TO_PARAMS(args_type))                      \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
     SPECIAL_MACRO_(ARGS_TYPE_TO_PARAMS(args_type))                             \
     _VSI_Tracer::pop_params_log_cache();                                       \
     _VSI_Tracer::amend_last_msg_cache(");\n");                                 \
@@ -431,28 +450,25 @@ struct _VSI_TraceApiClassBase {
 #define VSI_DEF_MEMFN_3_(_1, _2, _3)                                           \
   _Pragma("GCC error \"no implementation for 3 args macro overload\"")
 
-#define VSI_DEF_MEMFN_4_(_1, _2, _3, _4)                                       \
-  _Pragma("GCC error \"no implementation for 4 args macro overload\"")
-
-#define VSI_DEF_MEMFN_5_(retval, api_name, args_type, log_flags, proc_flags)   \
+#define VSI_DEF_MEMFN_4_(retval, api_name, args_type, proc_flags)              \
   retval api_name(ARGS_TYPE_TO_DECLARATION(args_type)) {                       \
     std::string this_obj_name = _VSI_TraceGetObjName();                        \
     _VSI_Tracer::logging_msg("%s->%s(",                                        \
                               this_obj_name.c_str(), __FUNCTION__);            \
-    LOG_PARAMS(log_flags, ARGS_TYPE_TO_PARAMS(args_type))                      \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
     _VSI_Tracer::dump_params_log_cache();                                      \
     _VSI_Tracer::logging_msg(");\n");                                          \
     return impl_->api_name(                                                    \
         PROC_PARAMS(proc_flags, ARGS_TYPE_TO_PARAMS(args_type)));              \
   }
 
-#define VSI_DEF_MEMFN_6_(retval, api_name, args_type, log_flags, proc_flags,   \
+#define VSI_DEF_MEMFN_5_(retval, api_name, args_type, proc_flags,              \
                          SPECIAL_MACRO_)                                       \
   retval api_name(ARGS_TYPE_TO_DECLARATION(args_type)) {                       \
     std::string this_obj_name = _VSI_TraceGetObjName();                        \
     _VSI_Tracer::push_back_msg_cache(                                          \
         this_obj_name + "->" + __FUNCTION__ + "(");                            \
-    LOG_PARAMS(log_flags, ARGS_TYPE_TO_PARAMS(args_type))                      \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
     SPECIAL_MACRO_(ARGS_TYPE_TO_PARAMS(args_type))                             \
     _VSI_Tracer::pop_params_log_cache();                                       \
     _VSI_Tracer::amend_last_msg_cache(");\n");                                 \
@@ -473,29 +489,25 @@ struct _VSI_TraceApiClassBase {
 #define VSI_DEF_INPLACE_MEMFN_3_(_1, _2, _3)                                   \
   _Pragma("GCC error \"no implementation for 3 args macro overload\"")
 
-#define VSI_DEF_INPLACE_MEMFN_4_(_1, _2, _3, _4)                               \
-  _Pragma("GCC error \"no implementation for 4 args macro overload\"")
-
-#define VSI_DEF_INPLACE_MEMFN_5_(retval, api_name, args_type, log_flags,       \
-                                 proc_flags)                                   \
+#define VSI_DEF_INPLACE_MEMFN_4_(retval, api_name, args_type, proc_flags)      \
   retval api_name(ARGS_TYPE_TO_DECLARATION(args_type)) {                       \
     std::string this_obj_name = _VSI_TraceGetObjName();                        \
     _VSI_Tracer::logging_msg("%s->%s(",                                        \
                               this_obj_name.c_str(), __FUNCTION__);            \
-    LOG_PARAMS(log_flags, ARGS_TYPE_TO_PARAMS(args_type))                      \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
     _VSI_Tracer::dump_params_log_cache();                                      \
     _VSI_Tracer::logging_msg(");\n");                                          \
     impl_->api_name(PROC_PARAMS(proc_flags, ARGS_TYPE_TO_PARAMS(args_type)));  \
     return *this;                                                              \
   }
 
-#define VSI_DEF_INPLACE_MEMFN_6_(retval, api_name, args_type, log_flags,       \
-                                 proc_flags, SPECIAL_MACRO_)                   \
+#define VSI_DEF_INPLACE_MEMFN_5_(retval, api_name, args_type, proc_flags,      \
+                                 SPECIAL_MACRO_)                               \
   retval api_name(ARGS_TYPE_TO_DECLARATION(args_type)) {                       \
     std::string this_obj_name = _VSI_TraceGetObjName();                        \
     _VSI_Tracer::push_back_msg_cache(                                          \
         this_obj_name + "->" + __FUNCTION__ + "(");                            \
-    LOG_PARAMS(log_flags, ARGS_TYPE_TO_PARAMS(args_type))                      \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
     SPECIAL_MACRO_(ARGS_TYPE_TO_PARAMS(args_type))                             \
     _VSI_Tracer::pop_params_log_cache();                                       \
     _VSI_Tracer::amend_last_msg_cache(");\n");                                 \
@@ -517,16 +529,13 @@ struct _VSI_TraceApiClassBase {
 #define VSI_DEF_CONSTRUCTOR_2_(_1, _2)                                         \
   _Pragma("GCC error \"no implementation for 2 args macro overload\"")
 
-#define VSI_DEF_CONSTRUCTOR_3_(_1, _2, _3)                                     \
-  _Pragma("GCC error \"no implementation for 3 args macro overload\"")
-
-#define VSI_DEF_CONSTRUCTOR_4_(class_name, args_type, log_flags, proc_flags)   \
+#define VSI_DEF_CONSTRUCTOR_3_(class_name, args_type, proc_flags)              \
   class_name(ARGS_TYPE_TO_DECLARATION(args_type)) {                            \
     std::string obj_name =                                                     \
         _VSI_Tracer::allocate_obj_name(_VSI_Tracer::objs_prefix_[#class_name]);\
     _VSI_Tracer::logging_msg("auto %s = %s::%s(", obj_name.c_str(),            \
         _VSI_TraceApiClassBase::target_namespace, __FUNCTION__);               \
-    LOG_PARAMS(log_flags, ARGS_TYPE_TO_PARAMS(args_type))                      \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
     _VSI_Tracer::dump_params_log_cache();                                      \
     _VSI_Tracer::logging_msg(");\n");                                          \
     impl_ = std::make_shared<target::class_name>(                              \
@@ -534,7 +543,7 @@ struct _VSI_TraceApiClassBase {
     _VSI_Tracer::insert_obj(static_cast<void*>(this), obj_name);               \
   }
 
-#define VSI_DEF_CONSTRUCTOR_5_(class_name, args_type, log_flags, proc_flags,   \
+#define VSI_DEF_CONSTRUCTOR_4_(class_name, args_type, proc_flags,              \
                                SPECIAL_MACRO_)                                 \
   class_name(ARGS_TYPE_TO_DECLARATION(args_type)) {                            \
     std::string obj_name =                                                     \
@@ -542,7 +551,7 @@ struct _VSI_TraceApiClassBase {
     _VSI_Tracer::push_back_msg_cache(                                          \
         "auto " + obj_name + " = " + _VSI_TraceApiClassBase::target_namespace  \
         + "::" __FUNCTION__ + "(");                                            \
-    LOG_PARAMS(log_flags, ARGS_TYPE_TO_PARAMS(args_type))                      \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
     SPECIAL_MACRO_(ARGS_TYPE_TO_PARAMS(args_type))                             \
     _VSI_Tracer::pop_params_log_cache();                                       \
     _VSI_Tracer::amend_last_msg_cache(");\n");                                 \
@@ -559,36 +568,32 @@ struct _VSI_TraceApiClassBase {
            offset, length);                                                    \
   _VSI_Tracer::insert_params_log_cache(std::string(log_msg), idx);
 
-#define GET_MACRO_OVERLOAD_6_(_1, _2, _3, _4, _5, _6, MACRO, ...) MACRO
 #define GET_MACRO_OVERLOAD_5_(_1, _2, _3, _4, _5, MACRO, ...) MACRO
+#define GET_MACRO_OVERLOAD_4_(_1, _2, _3, _4, MACRO, ...) MACRO
 
 #define VSI_DEF_MEMFN_SP(...)                                                  \
-  GET_MACRO_OVERLOAD_6_(__VA_ARGS__,                                           \
-                        VSI_DEF_MEMFN_SP_6_,                                   \
+  GET_MACRO_OVERLOAD_5_(__VA_ARGS__,                                           \
                         VSI_DEF_MEMFN_SP_5_,                                   \
                         VSI_DEF_MEMFN_SP_4_,                                   \
                         VSI_DEF_MEMFN_SP_3_,                                   \
                         VSI_DEF_MEMFN_SP_2_)(__VA_ARGS__)
 
 #define VSI_DEF_MEMFN(...)                                                     \
-  GET_MACRO_OVERLOAD_6_(__VA_ARGS__,                                           \
-                        VSI_DEF_MEMFN_6_,                                      \
+  GET_MACRO_OVERLOAD_5_(__VA_ARGS__,                                           \
                         VSI_DEF_MEMFN_5_,                                      \
                         VSI_DEF_MEMFN_4_,                                      \
                         VSI_DEF_MEMFN_3_,                                      \
                         VSI_DEF_MEMFN_2_)(__VA_ARGS__)
 
 #define VSI_DEF_INPLACE_MEMFN(...)                                             \
-  GET_MACRO_OVERLOAD_6_(__VA_ARGS__,                                           \
-                        VSI_DEF_INPLACE_MEMFN_6_,                              \
+  GET_MACRO_OVERLOAD_5_(__VA_ARGS__,                                           \
                         VSI_DEF_INPLACE_MEMFN_5_,                              \
                         VSI_DEF_INPLACE_MEMFN_4_,                              \
                         VSI_DEF_INPLACE_MEMFN_3_,                              \
                         VSI_DEF_INPLACE_MEMFN_2_)(__VA_ARGS__)
 
 #define VSI_DEF_CONSTRUCTOR(...)                                               \
-  GET_MACRO_OVERLOAD_5_(__VA_ARGS__,                                           \
-                        VSI_DEF_CONSTRUCTOR_5_,                                \
+  GET_MACRO_OVERLOAD_4_(__VA_ARGS__,                                           \
                         VSI_DEF_CONSTRUCTOR_4_,                                \
                         VSI_DEF_CONSTRUCTOR_3_,                                \
                         VSI_DEF_CONSTRUCTOR_2_,                                \
@@ -600,9 +605,8 @@ using ShapeType = std::vector<uint32_t>;
 struct TensorSpec : public _VSI_TraceApiClassBase<target::TensorSpec> {
   VSI_DEF_CONSTRUCTOR(TensorSpec)
   VSI_DEF_CONSTRUCTOR(TensorSpec,
-                      (target::DataType)(const ShapeType&)(target::TensorAttribute),
-                      (_L_ENUM)(_L_VECTOR)(_L_ENUM),
-                      (_P_DEFAULT)(_P_DEFAULT)(_P_DEFAULT))
+                     (target::DataType)(const ShapeType&)(target::TensorAttribute),
+                     (_P_DEFAULT)(_P_DEFAULT)(_P_DEFAULT))
 };
 
 } // // namespace trace
@@ -621,7 +625,6 @@ struct Tensor : public _VSI_TraceApiClassBase<target::Tensor> {
 VSI_DEF_MEMFN(bool,
               CopyDataToTensor,
               (const void*)(uint32_t),
-              (_L_DEFAULT)(_L_NUMERIC),
               (_P_DEFAULT)(_P_DEFAULT),
               SPECIAL_MACRO_)
 
@@ -637,7 +640,6 @@ VSI_DEF_MEMFN(bool,
 VSI_DEF_MEMFN(bool,
               CopyDataFromTensor,
               (void*),
-              (_L_DEFAULT),
               (_P_DEFAULT),
               SPECIAL_MACRO_)
 
@@ -663,13 +665,11 @@ struct Operation : public _VSI_TraceApiClassBase<target::Operation> {
   VSI_DEF_INPLACE_MEMFN(Operation&,
                 BindInput,
                 (const std::shared_ptr<Tensor>&),
-                (_L_OBJ_PTR),
                 (_P_OBJ_PTR))
 
   VSI_DEF_INPLACE_MEMFN(Operation&,
                 BindOutput,
                 (const std::shared_ptr<Tensor>&),
-                (_L_OBJ_PTR),
                 (_P_OBJ_PTR))
 
 #define SPECIAL_MACRO_(params)                                                 \
@@ -686,14 +686,12 @@ struct Operation : public _VSI_TraceApiClassBase<target::Operation> {
   VSI_DEF_INPLACE_MEMFN(Operation&,
                 BindInputs,
                 (const std::vector<std::shared_ptr<Tensor>>&),
-                (_L_DEFAULT),
                 (_P_OBJ_PTR_VEC_),
                 SPECIAL_MACRO_)
 
   VSI_DEF_INPLACE_MEMFN(Operation&,
                 BindOutputs,
                 (const std::vector<std::shared_ptr<Tensor>>&),
-                (_L_DEFAULT),
                 (_P_OBJ_PTR_VEC_),
                 SPECIAL_MACRO_)
 
@@ -736,7 +734,6 @@ struct Graph : public _VSI_TraceApiClassBase<target::Graph> {
   VSI_DEF_MEMFN_SP(Tensor,
                    CreateTensor,
                    (const TensorSpec&)(const void*),
-                   (_L_OBJ)(_L_DEFAULT),
                    (_P_OBJ)(_P_DEFAULT),
                    SPECIAL_MACRO_)
 
@@ -761,7 +758,6 @@ struct Graph : public _VSI_TraceApiClassBase<target::Graph> {
   VSI_DEF_MEMFN(bool,
                 CompileToBinary,
                 (void*)(size_t*),
-                (_L_DEFAULT)(_L_DEFAULT),
                 (_P_DEFAULT)(_P_DEFAULT),
                 SPECIAL_MACRO_)
 
@@ -771,7 +767,7 @@ struct Graph : public _VSI_TraceApiClassBase<target::Graph> {
 
   VSI_DEF_MEMFN(bool, Run)
 
-  template <typename OpType, typename... Params>
+  template <class OpType, class... Params>
   std::shared_ptr<OpType> CreateOperation(Params... parameters) {
     auto op = std::make_shared<OpType>(
         impl_->CreateOperation<OpType>(parameters...));
@@ -813,8 +809,8 @@ std::shared_ptr<trace::ops::NBG> Graph::CreateOperation(
     // LOGGING_PONITER_MSG(offset, data_length, 0)
     _VSI_Tracer::insert_params_log_cache(buf_name + ".data()", 0);
   }
-  _VSI_Tracer::logging_numeric<size_t>(input_count, 1);
-  _VSI_Tracer::logging_numeric<size_t>(output_count, 2);
+  _VSI_Tracer::logging_param<size_t>(input_count, 1);
+  _VSI_Tracer::logging_param<size_t>(output_count, 2);
   _VSI_Tracer::dump_params_log_cache();
   _VSI_Tracer::logging_msg(");\n");
   auto op = std::make_shared<trace::ops::NBG>(
