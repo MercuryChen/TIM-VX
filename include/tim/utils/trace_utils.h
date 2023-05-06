@@ -387,6 +387,15 @@ struct _VSI_TraceApiClassBase {
               MULTI_ARGS_TYPE_TO_DECLARATION_)(types)
 
 
+#define TO_VARIDIC_IMPL_COMMA_(r, _, elem) elem,
+#define TO_VARIDIC_IMPL_NO_COMMA_(elem) elem
+
+#define SEQ_TO_VARIDICS(seqs)                                                  \
+  BOOST_PP_SEQ_FOR_EACH(TO_VARIDIC_IMPL_COMMA_, _,                             \
+      BOOST_PP_SEQ_SUBSEQ(seqs, 0, BOOST_PP_DEC(BOOST_PP_SEQ_SIZE(seqs))))     \
+  TO_VARIDIC_IMPL_NO_COMMA_(                                                   \
+      BOOST_PP_SEQ_ELEM(BOOST_PP_DEC(BOOST_PP_SEQ_SIZE(seqs)), seqs))
+
 #define VSI_DEF_MEMFN_SP_2_(ret_class, api_name)                               \
   std::shared_ptr<ret_class> api_name() {                                      \
     std::string this_obj_name = _VSI_TraceGetObjName();                        \
@@ -561,6 +570,62 @@ struct _VSI_TraceApiClassBase {
     _VSI_Tracer::insert_obj(static_cast<void*>(this), obj_name);               \
   }
 
+#define SPECIALIZATION_CREATE_OP_1_(opname)                                    \
+template <>                                                                    \
+std::shared_ptr<trace::ops::opname> Graph::CreateOperation() {                 \
+  std::string this_obj_name = _VSI_TraceGetObjName();                          \
+  std::string obj_name = _VSI_Tracer::allocate_obj_name(std::string(#opname) + \
+      "_");                                                                    \
+  _VSI_Tracer::logging_msg(                                                    \
+      "auto %s = %s->CreateOperation<target::ops::%s>();\n",                   \
+      obj_name.c_str(), this_obj_name.c_str(), #opname);                       \
+  auto op = std::make_shared<trace::ops::opname>(                              \
+      impl_->CreateOperation<target::ops::opname>());                          \
+  _VSI_Tracer::insert_obj(static_cast<void*>(op.get()), obj_name);             \
+  return op;                                                                   \
+}
+
+#define SPECIALIZATION_CREATE_OP_2_(opname, args_type)                         \
+template <>                                                                    \
+std::shared_ptr<trace::ops::opname> Graph::CreateOperation(                    \
+    ARGS_TYPE_TO_DECLARATION(args_type)) {                                     \
+  std::string this_obj_name = _VSI_TraceGetObjName();                          \
+  std::string obj_name = _VSI_Tracer::allocate_obj_name(std::string(#opname) + \
+      "_");                                                                    \
+  _VSI_Tracer::logging_msg(                                                    \
+      "auto %s = %s->CreateOperation<target::ops::%s>(",                       \
+      obj_name.c_str(), this_obj_name.c_str(), #opname);                       \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
+    _VSI_Tracer::dump_params_log_cache();                                      \
+    _VSI_Tracer::logging_msg(");\n");                                          \
+  auto op = std::make_shared<trace::ops::opname>(                              \
+      impl_->CreateOperation<target::ops::opname>(                             \
+          SEQ_TO_VARIDICS(ARGS_TYPE_TO_PARAMS(args_type))));                   \
+  _VSI_Tracer::insert_obj(static_cast<void*>(op.get()), obj_name);             \
+  return op;                                                                   \
+}
+
+#define SPECIALIZATION_CREATE_OP_3_(opname, args_type, SPECIAL_MACRO_)         \
+template <>                                                                    \
+std::shared_ptr<trace::ops::opname> Graph::CreateOperation(                    \
+    ARGS_TYPE_TO_DECLARATION(args_type)) {                                     \
+  std::string this_obj_name = _VSI_TraceGetObjName();                          \
+  std::string obj_name = _VSI_Tracer::allocate_obj_name(std::string(#opname) + "_");        \
+  _VSI_Tracer::push_back_msg_cache(                                            \
+      "auto " + obj_name + " = " + this_obj_name +                              \
+      "->CreateOperation<target::ops::" + #opname + ">(");                     \
+    LOG_PARAMS(ARGS_TYPE_TO_PARAMS(args_type))                                 \
+    SPECIAL_MACRO_(ARGS_TYPE_TO_PARAMS(args_type))                             \
+    _VSI_Tracer::pop_params_log_cache();                                       \
+    _VSI_Tracer::amend_last_msg_cache(");\n");                                 \
+    _VSI_Tracer::msg_cache_sync_to_file();                                     \
+  auto op = std::make_shared<trace::ops::opname>(                              \
+      impl_->CreateOperation<target::ops::opname>(                             \
+          SEQ_TO_VARIDICS(ARGS_TYPE_TO_PARAMS(args_type))));                   \
+  _VSI_Tracer::insert_obj(static_cast<void*>(op.get()), obj_name);             \
+  return op;                                                                   \
+}
+
 #define LOGGING_PONITER_MSG(offset, length, idx)                               \
   char log_msg[1024] = {0};                                                    \
   snprintf(log_msg, 1024,                                                      \
@@ -570,6 +635,7 @@ struct _VSI_TraceApiClassBase {
 
 #define GET_MACRO_OVERLOAD_5_(_1, _2, _3, _4, _5, MACRO, ...) MACRO
 #define GET_MACRO_OVERLOAD_4_(_1, _2, _3, _4, MACRO, ...) MACRO
+#define GET_MACRO_OVERLOAD_3_(_1, _2, _3, MACRO, ...) MACRO
 
 #define VSI_DEF_MEMFN_SP(...)                                                  \
   GET_MACRO_OVERLOAD_5_(__VA_ARGS__,                                           \
@@ -598,6 +664,12 @@ struct _VSI_TraceApiClassBase {
                         VSI_DEF_CONSTRUCTOR_3_,                                \
                         VSI_DEF_CONSTRUCTOR_2_,                                \
                         VSI_DEF_CONSTRUCTOR_1_)(__VA_ARGS__)
+
+#define VSI_SPECIALIZATION_CREATE_OP(...)                                      \
+  GET_MACRO_OVERLOAD_3_(__VA_ARGS__,                                           \
+                        SPECIALIZATION_CREATE_OP_3_,                           \
+                        SPECIALIZATION_CREATE_OP_2_,                           \
+                        SPECIALIZATION_CREATE_OP_1_)(__VA_ARGS__)
 
 namespace trace {
 using ShapeType = std::vector<uint32_t>;
@@ -677,7 +749,7 @@ struct Operation : public _VSI_TraceApiClassBase<target::Operation> {
   _VSI_Tracer::amend_last_msg_cache("{");                                      \
   for (uint32_t i = 0; i < vec_size - 1; i++) {                                \
     _VSI_Tracer::amend_last_msg_cache(                                         \
-        BOOST_PP_SEQ_ELEM(0, params)[i]->_VSI_TraceGetObjName() + ",");        \
+        BOOST_PP_SEQ_ELEM(0, params)[i]->_VSI_TraceGetObjName() + ", ");       \
   }                                                                            \
   _VSI_Tracer::amend_last_msg_cache(                                           \
       BOOST_PP_SEQ_ELEM(0, params).back()->_VSI_TraceGetObjName());            \
@@ -703,13 +775,18 @@ struct Operation : public _VSI_TraceApiClassBase<target::Operation> {
 namespace trace {
 namespace ops {
 
-struct Add : Operation {
-  Add(const std::shared_ptr<target::ops::Add>& impl) : Operation(impl) {}
+#define DEF_TIMVX_OP_IMPL_(r, _, op)                                           \
+struct op : Operation {                                                        \
+  op(const std::shared_ptr<target::ops::op>& impl) : Operation(impl) {}        \
 };
 
-struct NBG : Operation {
-  NBG(const std::shared_ptr<target::ops::NBG>& impl) : Operation(impl) {}
-};
+#define DEF_TIMVX_OPS(ops)                                                     \
+  BOOST_PP_SEQ_FOR_EACH(DEF_TIMVX_OP_IMPL_, _, ops)
+
+DEF_TIMVX_OPS(
+  (Add)
+  (NBG)
+)
 
 } // namespace ops
 } // namespace trace
@@ -775,50 +852,24 @@ struct Graph : public _VSI_TraceApiClassBase<target::Graph> {
   }
 
 };
-template <>
-std::shared_ptr<trace::ops::Add> Graph::CreateOperation() {
-  std::string this_obj_name = _VSI_TraceGetObjName();
-  std::string obj_name = _VSI_Tracer::allocate_obj_name("add_");
-  _VSI_Tracer::logging_msg(
-      "auto %s = %s->CreateOperation<tim::vx::ops::Add>();\n",
-      obj_name.c_str(), this_obj_name.c_str());
-  auto op = std::make_shared<trace::ops::Add>(
-      impl_->CreateOperation<target::ops::Add>());
-  _VSI_Tracer::insert_obj(static_cast<void*>(op.get()), obj_name);
-  return op;
-}
 
-template <>
-std::shared_ptr<trace::ops::NBG> Graph::CreateOperation(
-    const char* binary, size_t input_count, size_t output_count) {
-  std::string this_obj_name = _VSI_TraceGetObjName();
-  std::string obj_name = _VSI_Tracer::allocate_obj_name("nbg_");
-  std::string buf_name = _VSI_Tracer::allocate_obj_name("nbg_buf_vec_");
-  _VSI_Tracer::logging_msg(
-      "std::vector<char> %s = trace::_VSI_Replayer::get_vector<char>(5324, 5212);\n",
-      buf_name.c_str());
-  _VSI_Tracer::logging_msg(
-      "auto %s = %s->CreateOperation<tim::vx::ops::NBG>(",
-      obj_name.c_str(), this_obj_name.c_str());
-  _VSI_Tracer::init_params_log_cache(3);
-  if (binary == nullptr) {
-    _VSI_Tracer::insert_params_log_cache("nullptr", 1);
-  } else {
-    uint32_t data_length = 5212;
-    _VSI_Tracer::dump_data(binary, sizeof(char), data_length);
-    // LOGGING_PONITER_MSG(offset, data_length, 0)
-    _VSI_Tracer::insert_params_log_cache(buf_name + ".data()", 0);
-  }
-  _VSI_Tracer::logging_param<size_t>(input_count, 1);
-  _VSI_Tracer::logging_param<size_t>(output_count, 2);
-  _VSI_Tracer::dump_params_log_cache();
-  _VSI_Tracer::logging_msg(");\n");
-  auto op = std::make_shared<trace::ops::NBG>(
-      impl_->CreateOperation<target::ops::NBG>(
-          binary, input_count, output_count));
-  _VSI_Tracer::insert_obj(static_cast<void*>(op.get()), obj_name);
-  return op;
-}
+VSI_SPECIALIZATION_CREATE_OP(Add)
+
+#define SPECIAL_MACRO_(params)                                                  \
+  std::string buf_name = _VSI_Tracer::allocate_obj_name("nbg_buf_vec_");       \
+  uint32_t data_length = 5212;                                                 \
+  uint32_t offset = _VSI_Tracer::dump_data(                                    \
+      BOOST_PP_SEQ_ELEM(0, params), sizeof(char), data_length);                \
+  _VSI_Tracer::insert_before_last_msg_cache("std::vector<char> " + buf_name +  \
+      " = trace::_VSI_Replayer::get_vector<char>(" + std::to_string(offset)  + \
+      "," + std::to_string(data_length) + ");\n");                             \
+  _VSI_Tracer::insert_params_log_cache(buf_name + ".data()", 0);
+
+VSI_SPECIALIZATION_CREATE_OP(NBG,
+                             (const char*)(size_t)(size_t),
+                             SPECIAL_MACRO_)
+
+#undef SPECIAL_MACRO_
 
 }  // namespace trace
 
