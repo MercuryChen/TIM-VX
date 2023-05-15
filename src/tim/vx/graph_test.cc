@@ -41,9 +41,9 @@ TEST(graph, trace_test) {
     tvx::ShapeType io_shape({1,2,2,1});
     tvx::TensorSpec input_spec(tim::vx::DataType::FLOAT32, io_shape, tim::vx::TensorAttribute::INPUT);
     tvx::TensorSpec output_spec(tim::vx::DataType::FLOAT32, io_shape, tim::vx::TensorAttribute::OUTPUT);
-    auto input_t0 = graph->CreateTensor(input_spec, nullptr);
-    auto input_t1 = graph->CreateTensor(input_spec, nullptr);
-    auto output_t = graph->CreateTensor(output_spec, nullptr);
+    auto input_t0 = graph->CreateTensor(input_spec);
+    auto input_t1 = graph->CreateTensor(input_spec);
+    auto output_t = graph->CreateTensor(output_spec);
 
     auto add = graph->CreateOperation<tvx::ops::Add>();
     (*add).BindInputs({input_t0, input_t1}).BindOutputs({output_t});
@@ -68,9 +68,9 @@ TEST(graph, trace_test) {
     EXPECT_EQ(output, expected_out);
 
     auto nbg_graph = ctx->CreateGraph();
-    auto nbg_in0 = nbg_graph->CreateTensor(input_spec, nullptr);
-    auto nbg_in1 = nbg_graph->CreateTensor(input_spec, nullptr);
-    auto nbg_out = nbg_graph->CreateTensor(output_spec, nullptr);
+    auto nbg_in0 = nbg_graph->CreateTensor(input_spec);
+    auto nbg_in1 = nbg_graph->CreateTensor(input_spec);
+    auto nbg_out = nbg_graph->CreateTensor(output_spec);
 
     EXPECT_TRUE(nbg_in0->CopyDataToTensor(in.data(), sizeof(float) * in.size()));
     EXPECT_TRUE(nbg_in1->CopyDataToTensor(in.data(), sizeof(float) * in.size()));
