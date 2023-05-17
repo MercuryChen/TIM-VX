@@ -42,9 +42,12 @@ TEST(graph, trace_test) {
     tvx::TensorSpec input_spec(tim::vx::DataType::FLOAT32, io_shape, tim::vx::TensorAttribute::INPUT);
     tvx::TensorSpec output_spec(tim::vx::DataType::FLOAT32, io_shape, tim::vx::TensorAttribute::OUTPUT);
     auto input_t0 = graph->CreateTensor(input_spec);
+    auto input_t0_t = graph->CreateTensor(input_spec);
     auto input_t1 = graph->CreateTensor(input_spec);
     auto output_t = graph->CreateTensor(output_spec);
 
+    auto reshape = graph->CreateOperation<tvx::ops::Reshape>(io_shape);
+    (*reshape).BindInput(input_t0).BindOutput(input_t0_t);
     auto add = graph->CreateOperation<tvx::ops::Add>();
     (*add).BindInputs({input_t0, input_t1}).BindOutputs({output_t});
 

@@ -9,6 +9,10 @@
 #include <stdarg.h>
 #include <boost/preprocessor.hpp>
 #include <boost/type_index.hpp>
+#include <boost/hana/tuple.hpp>
+#include <boost/hana/for_each.hpp>
+// #include <boost/mp11.hpp>
+// #include <boost/mp11/mpl.hpp>
 #include <type_traits>
 
 #include "tim/vx/context.h"
@@ -16,6 +20,7 @@
 #include "tim/vx/tensor.h"
 #include "tim/vx/types.h"
 #include "tim/vx/operation.h"
+#include "tim/vx/ops.h"
 
 /************************************************************ 
 Caution! Do not formatting these code with auto format tools!
@@ -200,9 +205,17 @@ struct _VSI_Tracer {
     }
   }
 
+  static void clear_params_log_cache() {
+    params_log_cache_.clear();
+  }
+
   static void init_params_log_cache(uint32_t params_size) {
     params_log_cache_.clear();
     params_log_cache_.resize(params_size);
+  }
+
+  static void append_params_log_cache(std::string param_log) {
+    params_log_cache_.push_back(param_log);
   }
 
   static void insert_params_log_cache(std::string param_log, uint32_t idx) {
@@ -211,6 +224,7 @@ struct _VSI_Tracer {
 
   // pop the log of params into msg cache
   static void pop_params_log_cache() {
+    if (params_log_cache_.size() == 0)  return;
     for (uint32_t i = 0; i < params_log_cache_.size() - 1; i++) {
       amend_last_msg_cache(params_log_cache_[i] + ", ");
     }
@@ -219,6 +233,7 @@ struct _VSI_Tracer {
 
   // directly dump the log of params to file
   static void dump_params_log_cache() {
+    if (params_log_cache_.size() == 0)  return;
     for (uint32_t i = 0; i < params_log_cache_.size() - 1; i++) {
       logging_msg("%s, ", params_log_cache_[i].c_str());
     }
@@ -258,7 +273,11 @@ struct _VSI_Tracer {
     char log_msg[1024] = {0};
     snprintf(log_msg, 1024, "trace::_VSI_Replayer::get_vector<%s>(%u, %u)",
              element_type.c_str(), offset, (uint32_t)t.size());
-    insert_params_log_cache(std::string(log_msg), idx);
+    if (idx != static_cast<uint32_t>(-1)) {
+      insert_params_log_cache(std::string(log_msg), idx);
+    } else {
+      append_params_log_cache(std::string(log_msg));
+    }
   }
 
   // enable if T is enum
@@ -270,7 +289,11 @@ struct _VSI_Tracer {
         boost::typeindex::type_id<decltype(t)>().pretty_name();
     char log_msg[1024] = {0};
     snprintf(log_msg, 1024, "(%s)%d", enum_type.c_str(), (int)t);
-    insert_params_log_cache(std::string(log_msg), idx);
+    if (idx != static_cast<uint32_t>(-1)) {
+      insert_params_log_cache(std::string(log_msg), idx);
+    } else {
+      append_params_log_cache(std::string(log_msg));
+    }
   }
 
   // enable if T is fundamental
@@ -278,7 +301,11 @@ struct _VSI_Tracer {
       typename std::enable_if_t<
           std::is_fundamental<std::decay_t<T>>::value, int> = 0>
   static void logging_param(const T& t, uint32_t idx) {
-    insert_params_log_cache(std::to_string(t), idx);
+    if (idx != static_cast<uint32_t>(-1)) {
+      insert_params_log_cache(std::to_string(t), idx);
+    } else {
+      append_params_log_cache(std::to_string(t));
+    }
   }
 
   // enable if T is derive from _VSI_TraceApiClassBase
@@ -286,7 +313,11 @@ struct _VSI_Tracer {
       typename std::enable_if_t<
           is_traced_obj<std::decay_t<T>>::value, int> = 0>
   static void logging_param(const T& t, uint32_t idx) {
-    insert_params_log_cache(t._VSI_TraceGetObjName(), idx);
+    if (idx != static_cast<uint32_t>(-1)) {
+      insert_params_log_cache(t._VSI_TraceGetObjName(), idx);
+    } else {
+      append_params_log_cache(t._VSI_TraceGetObjName());
+    }
   }
 
   // enable if T is shared_ptr point to object which 
@@ -295,7 +326,11 @@ struct _VSI_Tracer {
       typename std::enable_if_t<
           is_traced_obj_ptr<std::decay_t<T>>::value, int> = 0>
   static void logging_param(const T& t, uint32_t idx) {
-    insert_params_log_cache(t->_VSI_TraceGetObjName(), idx);
+    if (idx != static_cast<uint32_t>(-1)) {
+      insert_params_log_cache(t->_VSI_TraceGetObjName(), idx);
+    } else {
+      append_params_log_cache(t->_VSI_TraceGetObjName());
+    }
   }
 
 #pragma GCC diagnostic push
@@ -601,16 +636,24 @@ struct _VSI_TraceApiClassBase {
   }
 
 #define SPECIALIZATION_CREATE_OP_1_(opname)                                    \
-template <>                                                                    \
-std::shared_ptr<trace::ops::opname> Graph::CreateOperation() {                 \
+template <class... Params>                                                     \
+inline std::shared_ptr<trace::ops::opname> Graph::CreateOperationImpl(         \
+      ops::_VSI_Tag_of_ ## opname, Params... params) {                         \
   std::string this_obj_name = _VSI_TraceGetObjName();                          \
   std::string obj_name = _VSI_Tracer::allocate_obj_name(std::string(#opname) + \
       "_");                                                                    \
   _VSI_Tracer::logging_msg(                                                    \
-      "auto %s = %s->CreateOperation<target::ops::%s>();\n",                   \
-      obj_name.c_str(), this_obj_name.c_str(), #opname);                       \
+      "auto %s = %s->CreateOperation<%s::ops::%s>(", obj_name.c_str(),         \
+      this_obj_name.c_str(), __trace_target_namespace_, #opname);              \
+  _VSI_Tracer::clear_params_log_cache();                                       \
+  boost::hana::tuple<Params...> params_tuple = {params...};                    \
+  boost::hana::for_each(params_tuple, [&] (auto x) {                           \
+    _VSI_Tracer::logging_param(x, -1);                                         \
+  });                                                                          \
+  _VSI_Tracer::dump_params_log_cache();                                        \
+  _VSI_Tracer::logging_msg(");\n");                                            \
   auto op = std::make_shared<trace::ops::opname>(                              \
-      impl_->CreateOperation<target::ops::opname>());                          \
+      impl_->CreateOperation<target::ops::opname>(params...));                 \
   _VSI_Tracer::insert_obj(static_cast<void*>(op.get()), obj_name);             \
   return op;                                                                   \
 }
@@ -796,16 +839,29 @@ struct Operation : public _VSI_TraceApiClassBase<target::Operation> {
 namespace trace {
 namespace ops {
 
+struct DefaultTag {};
+template<class T>
+struct TagDispatchTrait {
+  using tag = DefaultTag;
+};
+
 #define DEF_TIMVX_OP_IMPL_(r, _, op)                                           \
 struct op : Operation {                                                        \
   op(const std::shared_ptr<target::ops::op>& impl) : Operation(impl) {}        \
+};                                                                             \
+struct BOOST_PP_CAT(_VSI_Tag_of_, op) {};                                      \
+template<>                                                                     \
+struct TagDispatchTrait<op> {                                                  \
+  using tag = BOOST_PP_CAT(_VSI_Tag_of_, op);                                  \
 };
 
-#define DEF_TIMVX_OPS(ops)                                                     \
+
+#define DEF_TIMVX_OPS_AND_TAGS(ops)                                            \
   BOOST_PP_SEQ_FOR_EACH(DEF_TIMVX_OP_IMPL_, _, ops)
 
-DEF_TIMVX_OPS(
+DEF_TIMVX_OPS_AND_TAGS(
   (Add)
+  (Reshape)
   (NBG)
 )
 
@@ -813,6 +869,11 @@ DEF_TIMVX_OPS(
 } // namespace trace
 
 namespace trace {
+
+#define DECL_CREATE_OP_IMPL(op)                                                \
+  template <class... Params>                                                   \
+  inline std::shared_ptr<trace::ops::op> CreateOperationImpl(                  \
+      ops::_VSI_Tag_of_ ## op, Params... params);                              \
 
 struct Graph : public _VSI_TraceApiClassBase<target::Graph> {
   Graph(const std::shared_ptr<target::Graph>& impl) { impl_ = impl; }
@@ -864,15 +925,18 @@ struct Graph : public _VSI_TraceApiClassBase<target::Graph> {
   VSI_DEF_MEMFN(bool, Run)
 
   template <class OpType, class... Params>
-  std::shared_ptr<OpType> CreateOperation(Params... parameters) {
-    auto op = std::make_shared<OpType>(
-        impl_->CreateOperation<OpType>(parameters...));
-    return op;
+  std::shared_ptr<OpType> CreateOperation(Params... params) {
+    return CreateOperationImpl(
+      typename ops::TagDispatchTrait<OpType>::tag {}, params...);
   }
 
+ private:
+  DECL_CREATE_OP_IMPL(Add)
+  DECL_CREATE_OP_IMPL(Reshape)
 };
 
 VSI_SPECIALIZATION_CREATE_OP(Add)
+VSI_SPECIALIZATION_CREATE_OP(Reshape)
 
 #define SPECIAL_MACRO_(params)                                                 \
   std::string buf_name = _VSI_Tracer::allocate_obj_name("nbg_buf_vec_");       \
